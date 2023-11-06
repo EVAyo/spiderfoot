@@ -8,12 +8,13 @@
 #
 # Created:     03/05/2017
 # Copyright:   (c) Steve Micallef 2017
-# Licence:     GPL
+# Licence:     MIT
 # -------------------------------------------------------------------------------
 
 import argparse
 import cmd
 import codecs
+import io
 import json
 import os
 import re
@@ -248,8 +249,7 @@ class SpiderFootCli(cmd.Cmd):
         spaces = 2
         # Find the maximum column sizes
         for r in data:
-            i = 0
-            for c in r:
+            for i, c in enumerate(r):
                 if type(r) == list:
                     # we have  list index
                     cn = str(i)
@@ -264,7 +264,6 @@ class SpiderFootCli(cmd.Cmd):
                 # print(str(cn) + ", " + str(c) + ", " + str(v))
                 if len(v) > maxsize.get(cn, 0):
                     maxsize[cn] = len(v)
-                i += 1
 
         # Adjust for long titles
         if titlemap:
@@ -273,8 +272,7 @@ class SpiderFootCli(cmd.Cmd):
                     maxsize[c] = len(titlemap.get(c, c))
 
         # Display the column titles
-        i = 0
-        for c in cols:
+        for i, c in enumerate(cols):
             if titlemap:
                 t = titlemap.get(c, c)
             else:
@@ -287,19 +285,16 @@ class SpiderFootCli(cmd.Cmd):
             if sdiff > 0 and i < len(cols) - 1:
                 # out += " " * sdiff
                 out.append(" " * sdiff)
-            i += 1
         # out += "\n"
         out.append('\n')
 
         # Then the separator
-        i = 0
-        for c in cols:
+        for i, c in enumerate(cols):
             # out += "-" * ((maxsize[c]+spaces))
             out.append("-" * ((maxsize[c] + spaces)))
             if i < len(cols) - 1:
                 # out += "+"
                 out.append("+")
-            i += 1
         # out += "\n"
         out.append("\n")
 
@@ -795,8 +790,8 @@ class SpiderFootCli(cmd.Cmd):
 
     # Export data from a scan.
     def do_export(self, line):
-        """export <sid> [-t type]
-        Export the scan data for scan ID <sid> as type [type].
+        """export <sid> [-t type] [-f file]
+        Export the scan data for scan ID <sid> as type [type] to file [file].
         Valid types: csv, json, gexf (default: json)."""
         c = self.myparseline(line)
 
@@ -808,9 +803,18 @@ class SpiderFootCli(cmd.Cmd):
         if '-t' in c[0]:
             export_format = c[0][c[0].index("-t") + 1]
 
+        file = None
+        if '-f' in c[0]:
+            file = c[0][c[0].index("-f") + 1]
+
         base_url = self.ownopts['cli.server_baseurl']
         post = {"ids": c[0][0]}
 
+        if export_format not in ['json', 'csv', 'gexf']:
+            self.edprint(f"Invalid export format: {export_format}")
+            return
+
+        data = None
         if export_format == 'json':
             res = self.request(base_url + '/scanexportjsonmulti', post=post)
 
@@ -824,28 +828,27 @@ class SpiderFootCli(cmd.Cmd):
                 self.dprint("No results.")
                 return
 
-            self.send_output(json.dumps(j), line, titles=None, total=False, raw=True)
+            data = json.dumps(j)
 
         elif export_format == 'csv':
-            res = self.request(base_url + '/scaneventresultexportmulti', post=post)
-
-            if not res:
-                self.dprint("No results.")
-                return
-
-            self.send_output(res, line, titles=None, total=False, raw=True)
+            data = self.request(base_url + '/scaneventresultexportmulti', post=post)
 
         elif export_format == 'gexf':
-            res = self.request(base_url + '/scanvizmulti', post=post)
+            data = self.request(base_url + '/scanvizmulti', post=post)
 
-            if not res:
-                self.dprint("No results.")
-                return
+        if not data:
+            self.dprint("No results.")
+            return
 
-            self.send_output(res, line, titles=None, total=False, raw=True)
+        self.send_output(data, line, titles=None, total=False, raw=True)
 
-        else:
-            self.edprint(f"Invalid export format: {export_format}")
+        if file:
+            try:
+                with io.open(file, "w", encoding="utf-8", errors="ignore") as fp:
+                    fp.write(data)
+                self.dprint(f"Wrote scan {c[0][0]} data to {file}")
+            except Exception as e:
+                self.edprint(f"Could not write scan {c[0][0]} data to file '{file}': {e}")
 
     # Show logs.
     def do_logs(self, line):
@@ -1154,6 +1157,7 @@ class SpiderFootCli(cmd.Cmd):
             ["delete", "Delete a scan."],
             ["scaninfo", "Scan information."],
             ["data", "Show data from a scan's results."],
+            ["export", "Export scan results to file."],
             ["correlations", "Show correlation results from a scan."],
             ["summary", "Scan result summary."],
             ["find", "Search for data within scan results."],
@@ -1364,9 +1368,10 @@ if __name__ == "__main__":
     # Load commands from a file
     if args.e:
         try:
-            cin = open(args.e, "r")
+            with open(args.e, 'r') as f:
+                cin = f.read()
         except BaseException as e:
-            print("Unable to open " + args.e + ":" + " (" + str(e) + ")")
+            print(f"Unable to open {args.e}: ({e})")
             sys.exit(-1)
     else:
         cin = sys.stdin
@@ -1380,9 +1385,8 @@ if __name__ == "__main__":
         s.ownopts['cli.password'] = args.p
     if args.P:
         try:
-            pf = open(args.P, "r")
-            s.ownopts['cli.password'] = pf.readlines()[0].strip('\n')
-            pf.close()
+            with open(args.P, 'r') as f:
+                s.ownopts['cli.password'] = f.readlines()[0].strip('\n')
         except BaseException as e:
             print(f"Unable to open {args.P}: ({e})")
             sys.exit(-1)
